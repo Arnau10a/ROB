@@ -1,0 +1,23 @@
+# ROS2 build and install folders
+build/
+install/
+log/
+
+# Python caches
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+
+# SLAM and map generation artifacts
+*.pbstream
+
+# OS and Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
