@@ -36,11 +36,26 @@ class MissionController(Node):
         self.navigator = Navigator()
         self.perception = Perception()
         
-        # Robot state
-        self.x = 0.0
-        self.y = 0.0
-        self.yaw = 0.0
+        # Robot state (Odometry)
+        self.odom_x = 0.0
+        self.odom_y = 0.0
+        self.odom_yaw = 0.0
         self.odom_ready = False
+        
+        # --- CONFIGURACIÓ INICIAL (LABORATORI) ---
+        # Si el profe et posa al Punt A, posa: 2.52, 1.35
+        # Si et posa al Punt C, posa: 1.32, 0.95
+        # ORIENTACIÓ: El robot ha de mirar cap a la dreta del mapa (Eix X+)
+        self.initial_x = 2.52 
+        self.initial_y = 1.35
+        self.initial_yaw = 0.0 # rad
+        # -----------------------------------------
+        
+        # Absolute Map Coordinates (Initial + Odom)
+        self.map_x = self.initial_x
+        self.map_y = self.initial_y
+        self.map_yaw = self.initial_yaw
+        
         self.scan_ready = False
         
         # Scan data
@@ -87,12 +102,19 @@ class MissionController(Node):
         
         with open(self.log_file_path, mode='a', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow([self.get_clock().now().to_msg().sec, self.phase, self.x, self.y, self.yaw, sx, sy])
+            writer.writerow([self.get_clock().now().to_msg().sec, self.phase, self.map_x, self.map_y, self.map_yaw, sx, sy])
 
     def odom_callback(self, msg):
-        self.x = msg.pose.pose.position.x
-        self.y = msg.pose.pose.position.y
-        self.yaw = obtener_yaw(msg.pose.pose.orientation)
+        self.odom_x = msg.pose.pose.position.x
+        self.odom_y = msg.pose.pose.position.y
+        self.odom_yaw = obtener_yaw(msg.pose.pose.orientation)
+        
+        # Transform odometry to absolute map frame
+        # (Assuming robot starts aligned with map X axis)
+        self.map_x = self.initial_x + self.odom_x
+        self.map_y = self.initial_y + self.odom_y
+        self.map_yaw = self.initial_yaw + self.odom_yaw
+        
         self.odom_ready = True
 
     def scan_callback(self, msg):
@@ -138,7 +160,7 @@ class MissionController(Node):
         # Follow path B -> O -> P base
         goal_x, goal_y = self.waypoints_phase_1[self.current_wp_idx]
         lin, ang, reached = self.navigator.compute_apf_cmd_vel(
-            self.x, self.y, self.yaw, goal_x, goal_y,
+            self.map_x, self.map_y, self.map_yaw, goal_x, goal_y,
             self.scan_ranges, self.angle_min, self.angle_inc
         )
         
@@ -154,7 +176,7 @@ class MissionController(Node):
     def execute_phase_2(self):
         # Look for charging station while exploring passadis
         center, pillars = self.perception.find_charging_station(
-            self.scan_ranges, self.angle_min, self.angle_inc, self.x, self.y, self.yaw
+            self.scan_ranges, self.angle_min, self.angle_inc, self.map_x, self.map_y, self.map_yaw
         )
         
         if center is not None:
@@ -170,7 +192,7 @@ class MissionController(Node):
         if self.expl_idx < len(self.exploration_wps):
             goal_x, goal_y = self.exploration_wps[self.expl_idx]
             lin, ang, reached = self.navigator.compute_apf_cmd_vel(
-                self.x, self.y, self.yaw, goal_x, goal_y,
+                self.map_x, self.map_y, self.map_yaw, goal_x, goal_y,
                 self.scan_ranges, self.angle_min, self.angle_inc
             )
             if reached:
@@ -193,7 +215,7 @@ class MissionController(Node):
         self.navigator.max_angular = 0.2
         self.navigator.waypoint_tolerance = 0.02 # High precision within 2cm
         
-        lin, ang, reached = self.navigator.compute_cmd_vel(self.x, self.y, self.yaw, goal_x, goal_y)
+        lin, ang, reached = self.navigator.compute_cmd_vel(self.map_x, self.map_y, self.map_yaw, goal_x, goal_y)
         if reached:
             self.get_logger().info('Precision Docking Complete! MISSION ACCOMPLISHED.')
             self.stop_robot()
