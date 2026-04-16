@@ -8,6 +8,7 @@ import math
 import csv
 import time
 import os
+import subprocess
 
 from autonomous_nav_pkg.navigation import Navigator
 from autonomous_nav_pkg.perception import Perception
@@ -73,9 +74,7 @@ class MissionController(Node):
 
         self.get_logger().info('Mission Controller Started - Initializing...')
         
-        # Obstacle avoidance state
-        self.avoiding_obstacle = False
-        self.avoid_turn_dir = 1.0
+        # NOTE: Removed basic obstacle avoidance state variables in favor of robust APF.
 
     def init_logger(self):
         with open(self.log_file_path, mode='w', newline='') as file:
@@ -118,9 +117,6 @@ class MissionController(Node):
         if not self.odom_ready or not self.scan_ready:
             return
             
-        # 1. Check for obstacles
-        has_obstacle, dist = self.perception.check_front_obstacle(self.scan_ranges, self.angle_min, self.angle_inc)
-        
         if self.phase == "DONE":
             self.stop_robot()
             return
@@ -129,19 +125,6 @@ class MissionController(Node):
         if (self.get_clock().now().nanoseconds % 1000000000) < 50000000: # ~1 Hz logging
             self.log_status()
 
-        # Reactive Obstacle Avoidance (Overrides planned path)
-        if has_obstacle and self.phase != "III": # Don't avoid during precise docking
-            self.get_logger().warn('Obstacle Front! Executing Avoidance.')
-            # Rotate until clear
-            self.publish_vel(0.0, 0.6) 
-            self.avoiding_obstacle = True
-            return
-        elif self.avoiding_obstacle:
-            # We just cleared the obstacle, drive forward a bit to bypass
-            self.publish_vel(0.15, 0.0)
-            self.avoiding_obstacle = False
-            return
-            
         # State Machine
         if self.phase == "I":
             self.execute_phase_1()
@@ -154,7 +137,10 @@ class MissionController(Node):
     def execute_phase_1(self):
         # Follow path B -> O -> P base
         goal_x, goal_y = self.waypoints_phase_1[self.current_wp_idx]
-        lin, ang, reached = self.navigator.compute_cmd_vel(self.x, self.y, self.yaw, goal_x, goal_y)
+        lin, ang, reached = self.navigator.compute_apf_cmd_vel(
+            self.x, self.y, self.yaw, goal_x, goal_y,
+            self.scan_ranges, self.angle_min, self.angle_inc
+        )
         
         if reached:
             self.get_logger().info(f'Waypoint {self.current_wp_idx + 1} reached!')
@@ -183,7 +169,10 @@ class MissionController(Node):
         # Follow exploration wps
         if self.expl_idx < len(self.exploration_wps):
             goal_x, goal_y = self.exploration_wps[self.expl_idx]
-            lin, ang, reached = self.navigator.compute_cmd_vel(self.x, self.y, self.yaw, goal_x, goal_y)
+            lin, ang, reached = self.navigator.compute_apf_cmd_vel(
+                self.x, self.y, self.yaw, goal_x, goal_y,
+                self.scan_ranges, self.angle_min, self.angle_inc
+            )
             if reached:
                 self.expl_idx += 1
                 if self.station_center is not None and self.expl_idx >= len(self.exploration_wps):
@@ -209,6 +198,14 @@ class MissionController(Node):
             self.get_logger().info('Precision Docking Complete! MISSION ACCOMPLISHED.')
             self.stop_robot()
             self.phase = "DONE"
+            
+            # Save the SLAM Map automatically
+            self.get_logger().info('Executing command to save the map: map_final.yaml / .pgm')
+            try:
+                subprocess.Popen(['ros2', 'run', 'nav2_map_server', 'map_saver_cli', '-f', 'map_final'])
+                self.get_logger().info('Map saved successfully in the current directory.')
+            except Exception as e:
+                self.get_logger().error(f'Failed to save map: {e}')
         else:
             self.publish_vel(lin, ang)
 
