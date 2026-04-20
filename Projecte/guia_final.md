@@ -1,44 +1,31 @@
 # 🚀 Guia Final d'Execució: Projecte Navegació Autònoma
 
-Aquesta guia conté tots els passos i comandes necessàries per executar el projecte al laboratori amb el **TurtleBot3 Burger** real.
+Aquesta guia conté els passos per executar la missió completa de 3 fases amb el **TurtleBot3 Burger** real.
 
-## 1. Preparació al PC del Laboratori (Ubuntu)
-Obre un terminal al PC i descarrega el teu projecte:
+## 1. Preparació al PC del Laboratori
+Obre un terminal al PC per compilar el projecte:
 
 ```bash
-# 1. Ves a la carpeta on vulguis guardar el projecte
-cd ~/Documents/UPC
+# 1. Ves al teu workspace de ROS 2
+cd ~/ros2_ws 
 
-# 2. Descarrega el projecte (Clone públic, no et demanarà usuari)
-git clone https://github.com/Arnau10a/ROB.git
-cd ROB
-
-# 3. Activa l'entorn de ROS 2 Jazzy (necessari per a cada terminal)
-source /opt/ros/jazzy/setup.bash
-
-# 4. Instal·la els paquets de TurtleBot3 i Gazebo (si el PC s'ha reiniciat)
-# Assegura't de tenir el fitxer .sh a /home/rob o on indiqui el profe
-chmod +x install_ros2_turtlebot.sh
-./install_ros2_turtlebot.sh
-source ~/.bashrc
-
-# 5. Configura el Domain ID del teu robot (substitueix X pel número del teu Burger)
-export ROS_DOMAIN_ID=X
-export TURTLEBOT3_MODEL=burger
-
-# 6. Compila i carrega el TEU projecte
+# 2. Compila el paquet de navegació
 colcon build --packages-select autonomous_nav_pkg
 source install/setup.bash
+
+# 3. Configura el Domain ID (substitueix X pel número del teu Burger)
+export ROS_DOMAIN_ID=X
+export TURTLEBOT3_MODEL=burger
 ```
 
 ---
 
 ## 2. Connexió i "Bringup" del Robot
-Has de connectar-te al robot via SSH. El robot ha d'estar encès.
+Has de connectar-te al robot via SSH. El robot ha d'estar encès i a la xarxa del lab.
 
 1. **Terminal 1 (PC):** Connecta't al robot:
    ```bash
-   ssh ubuntu@10.10.73.2XX  # 2XX és la IP del teu robot (ex: 241)
+   ssh burger@10.10.73.2XX  # 2XX és la IP del teu robot
    # Password: turtlebot
    ```
 
@@ -46,44 +33,45 @@ Has de connectar-te al robot via SSH. El robot ha d'estar encès.
    ```bash
    ros2 launch turtlebot3_bringup robot.launch.py
    ```
-   *Deixa aquesta finestra oberta fins al final.*
+   *Deixa aquesta finestra oberta.*
 
 ---
 
-## 3. Llançament de la Missió
-Col·loca el robot al punt de sortida i orienta'l correctament segons el mapa.
+## 3. Llançament de la Missió (3 Fases)
+El robot completarà: **Fase I** (Ruta D→B→O), **Fase II** (Exploració + Trobar Estació + Tornar a Base) i **Fase III** (Docking de Precisió).
 
 1. **Terminal 2 (PC):** Llança tot el projecte (SLAM + Controlador):
    ```bash
-   # Recorda fer source si és un terminal nou
    source /opt/ros/jazzy/setup.bash
-   source ~/Documents/UPC/ROB/install/setup.bash
+   source ~/ros2_ws/install/setup.bash
    
-   # Llança la missió
+   # Llança la missió (usa use_sim_time:=true si estàs en Gazebo)
    ros2 launch autonomous_nav_pkg mission.launch.py
    ```
 
 ---
 
-## 4. Monitorització (RVIZ)
-Si vols veure el mapa que s'està creant:
-
-1. **Terminal 3 (PC):** Obre la visualització:
-   ```bash
-   rviz2
-   ```
+## 4. Monitorització i Verificació
+- **RViz2**: Obre `rviz2` al PC. Afegeix `Map` per veure el SLAM i `TF` per veure com el robot es localitza respecte al mapa (`map → base_link`).
+- **Terminal**: El controlador treguerà missatges indicant en quina fase es troba (`PHASE I`, `PHASE II`, `PHASE III`).
+- **Detecció**: Quan el robot entri al Passadís, veuràs logs de `[STATION]` si detecta els pilars de 40x40cm.
 
 ---
 
-## 5. Aturada Segura (MOLT IMPORTANT)
-Quan acabis la missió (el robot guardarà el mapa automàticament), apaga-ho tot així:
+## 5. Resultats i Aturada
+Quan el robot arribi al final (Docking completat):
 
-1. **Atura els programes:** Fes `Ctrl+C` a tous els terminals del PC.
-2. **Apaga el Robot (SSH):** Al terminal on estàs connectat al robot (T1), executa:
+1. **Atura els programes:** `Ctrl+C` als terminals.
+2. **Recupera els fitxers:** Al directori on has executat la missió trobaràs:
+   - `mission_log.csv`: El log requerit pel projecte amb posicions d'obstacles i pilars.
+   - `generated_map.yaml` i `generated_map.pgm`: El mapa generat pel robot.
+3. **Apaga el Robot (SSH):** 
    ```bash
    sudo shutdown now
    ```
-3. Espera 15 segons i tanca l'interruptor físic del Burger.
+
+> [!IMPORTANT]
+> **Coordenades de Sortida**: El robot està configurat per sortir des del **Punt D** (3.32, 0.95). Si surts de Punt A o C, modifica `self.initial_x` i `self.initial_y` a `mission_controller.py` i torna a fer `colcon build`.
 
 > [!TIP]
-> **Recordatori de Coordenades**: Si el robot comença en un punt diferent al **Punt A**, recorda obrir `mission_controller.py` i canviar els valors de `self.initial_x` i `self.initial_y` abans del `colcon build`.
+> **Seguretat**: Si el robot s'apropa massa a un obstacle no detectat pel SLAM, l'algorisme **APF** (forces repulsives) hauria d'actuar, però estigues preparat per aturar-lo manualment si cal.
