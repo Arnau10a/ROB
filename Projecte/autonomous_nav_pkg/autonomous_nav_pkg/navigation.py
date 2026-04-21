@@ -3,36 +3,24 @@ import math
 
 class Navigator:
     def __init__(self):
-        # Control gains
-        self.k_p_linear = 0.42
-        self.k_p_angular = 1.4
+        # ── Ganancias del controlador ──────────────────────────────────────────
+        self.k_p_linear = 0.42       # ganancia proporcional para velocidad lineal
+        self.k_p_angular = 1.4       # ganancia proporcional para velocidad angular
 
-        # Velocity limits
-        self.max_linear = 0.20
-        self.max_angular = 0.60
+        # ── Límites de velocidad ───────────────────────────────────────────────
+        self.max_linear = 0.20       # velocidad lineal máxima (m/s)
+        self.max_angular = 0.60      # velocidad angular máxima (rad/s)
 
-        # Goal condition
-        self.waypoint_tolerance = 0.15  # meters
+        # ── Condición de llegada al waypoint ───────────────────────────────────
+        self.waypoint_tolerance = 0.15   # distancia mínima para considerar meta alcanzada (m)
 
-        # APF params (más suave)
-        self.k_att = 1.0
-        self.k_rep = 0.04
-        self.d_safe = 0.40
+        # ── Umbrales de obstáculos ─────────────────────────────────────────────
+        self.emergency_stop_dist = 0.14  # parada de emergencia: obstáculo < 14 cm
+        self.caution_dist = 0.30         # zona de precaución: obstáculo < 30 cm → girar en sitio
 
-        # Obstacle thresholds
-        self.emergency_stop_dist = 0.14
-        self.caution_dist = 0.24
-
-        # Anti flicker / hysteresis
-        self.avoid_enter_count_required = 3
-        self.avoid_exit_count_required = 5
-
-        self._danger_count = 0
-        self._clear_count = 0
-        self._in_avoid_mode = False
-
-        # Cap de repulsión total para evitar giros locos
-        self.max_repulsive_mag = 0.80
+        # ── Política de movimiento (controlador go-to-goal simplificado) ───────
+        self.align_angle = 0.80      # umbral de alineación: si |angle_diff| < 0.80 rad → avanzar
+        self.min_linear = 0.03       # velocidad lineal mínima para evitar quedarse parado (m/s)
 
     def normalize_angle(self, angle):
         while angle > math.pi:
@@ -71,59 +59,41 @@ class Navigator:
 
         return min_front, min_left, min_right, nearest_all
 
-    def _update_avoid_hysteresis(self, danger_now: bool):
-        if danger_now:
-            self._danger_count += 1
-            self._clear_count = 0
-        else:
-            self._clear_count += 1
-            self._danger_count = 0
-
-        if not self._in_avoid_mode and self._danger_count >= self.avoid_enter_count_required:
-            self._in_avoid_mode = True
-
-        if self._in_avoid_mode and self._clear_count >= self.avoid_exit_count_required:
-            self._in_avoid_mode = False
-
-    def _cap_repulsive(self, vx, vy):
-        mag = math.hypot(vx, vy)
-        if mag <= self.max_repulsive_mag or mag < 1e-9:
-            return vx, vy, mag
-        scale = self.max_repulsive_mag / mag
-        return vx * scale, vy * scale, self.max_repulsive_mag
-
     def compute_apf_cmd_vel(self, current_x, current_y, current_yaw, goal_x, goal_y, ranges, angle_min, angle_inc):
+        # Distancia y ángulo directo al objetivo (go-to-goal)
         dx = goal_x - current_x
         dy = goal_y - current_y
         distance = math.hypot(dx, dy)
 
+        # Meta alcanzada: parar y señalizar
         if distance < self.waypoint_tolerance:
-            self._danger_count = 0
-            self._clear_count = 0
-            self._in_avoid_mode = False
             return 0.0, 0.0, True, "GOAL_REACHED", {
                 "distance": distance,
+                "min_front": float("inf"),
+                "min_left": float("inf"),
+                "min_right": float("inf"),
+                "nearest_all": float("inf"),
                 "obstacle_detected": False,
+                "repulsive_mag": 0.0,
+                "angle_diff": 0.0,
                 "danger_now": False,
                 "avoid_mode": False,
                 "danger_count": 0,
                 "clear_count": 0,
-                "repulsive_mag": 0.0,
-                "angle_diff": 0.0,
             }
 
+        # Estadísticas del láser (frente, izquierda, derecha, más cercano)
         min_front, min_left, min_right, nearest_all = self._scan_stats(ranges, angle_min, angle_inc)
 
-        # Emergencia frontal
-        if min_front < self.emergency_stop_dist:
-            turn_sign = -1.0 if min_left < min_right else 1.0
-            linear_vel = 0.0
-            angular_vel = turn_sign * 0.55
-            self._in_avoid_mode = True
-            self._danger_count = self.avoid_enter_count_required
-            self._clear_count = 0
+        # Ángulo hacia el objetivo y diferencia con la orientación actual
+        target_angle = math.atan2(dy, dx)
+        angle_diff = self.normalize_angle(target_angle - current_yaw)
 
-            return linear_vel, angular_vel, False, "EMERGENCY_AVOID", {
+        # ── Parada de emergencia: obstáculo muy cerca por delante ──────────────
+        if min_front < self.emergency_stop_dist:
+            # Girar hacia el lado más libre para escapar del obstáculo
+            turn_sign = 1.0 if min_left >= min_right else -1.0
+            return 0.0, turn_sign * self.max_angular, False, "EMERGENCY_AVOID", {
                 "distance": distance,
                 "min_front": min_front,
                 "min_left": min_left,
@@ -131,80 +101,51 @@ class Navigator:
                 "nearest_all": nearest_all,
                 "obstacle_detected": True,
                 "repulsive_mag": 0.0,
-                "angle_diff": 0.0,
+                "angle_diff": angle_diff,
                 "danger_now": True,
-                "avoid_mode": self._in_avoid_mode,
-                "danger_count": self._danger_count,
-                "clear_count": self._clear_count,
+                "avoid_mode": True,
+                "danger_count": 1,
+                "clear_count": 0,
             }
 
-        # Attractive
-        v_att_x = self.k_att * (dx / max(distance, 1e-6))
-        v_att_y = self.k_att * (dy / max(distance, 1e-6))
+        # ── Zona de precaución: obstáculo cerca por delante → girar en sitio ───
+        if min_front < self.caution_dist:
+            # Girar hacia el lado con más espacio libre
+            turn_sign = 1.0 if min_left >= min_right else -1.0
+            return 0.0, turn_sign * self.max_angular, False, "AVOIDING_OBSTACLE", {
+                "distance": distance,
+                "min_front": min_front,
+                "min_left": min_left,
+                "min_right": min_right,
+                "nearest_all": nearest_all,
+                "obstacle_detected": True,
+                "repulsive_mag": 0.0,
+                "angle_diff": angle_diff,
+                "danger_now": True,
+                "avoid_mode": True,
+                "danger_count": 1,
+                "clear_count": 0,
+            }
 
-        # Repulsive
-        v_rep_x = 0.0
-        v_rep_y = 0.0
-        obstacle_detected = False
+        # ── Controlador go-to-goal: sin obstáculos bloqueando el frente ────────
 
-        if ranges:
-            for i, r in enumerate(ranges):
-                if r is None or not math.isfinite(r) or r <= 0.10:
-                    continue
-                if r >= self.d_safe:
-                    continue
-
-                angle = self.normalize_angle(angle_min + i * angle_inc)
-
-                # usar frente + laterales (240º)
-                if abs(angle) > math.radians(120):
-                    continue
-
-                obstacle_detected = True
-                rep_force = self.k_rep * ((1.0 / r) - (1.0 / self.d_safe)) * (1.0 / (r * r))
-                abs_angle = current_yaw + angle
-
-                v_rep_x += rep_force * (-math.cos(abs_angle))
-                v_rep_y += rep_force * (-math.sin(abs_angle))
-
-        # cap repulsión
-        v_rep_x, v_rep_y, repulsive_mag = self._cap_repulsive(v_rep_x, v_rep_y)
-
-        # Total vector
-        v_tot_x = v_att_x + v_rep_x
-        v_tot_y = v_att_y + v_rep_y
-
-        target_angle = math.atan2(v_tot_y, v_tot_x)
-        angle_diff = self.normalize_angle(target_angle - current_yaw)
-
-        # Condición de peligro instantánea
-        danger_now = (min_front < self.caution_dist) or (repulsive_mag > 0.40)
-        self._update_avoid_hysteresis(danger_now)
-
-        # Policy
-        if self._in_avoid_mode:
-            nav_state = "AVOIDING_OBSTACLE"
-            if abs(angle_diff) > 0.55:
-                linear_vel = 0.0
-            else:
-                linear_vel = 0.05
-            angular_vel = self.k_p_angular * angle_diff
-        else:
-            if abs(angle_diff) > 0.45:
-                nav_state = "TURNING_TO_PATH"
-                linear_vel = 0.0
-                angular_vel = self.k_p_angular * angle_diff
-            elif abs(angle_diff) > 0.15:
-                nav_state = "PATH_CORRECTION"
-                linear_vel = self.k_p_linear * min(distance, 1.0) * 0.6
-                angular_vel = self.k_p_angular * angle_diff
-            else:
-                nav_state = "GOING_STRAIGHT"
-                linear_vel = self.k_p_linear * min(distance, 1.0)
-                angular_vel = self.k_p_angular * angle_diff
-
-        linear_vel = max(-self.max_linear, min(self.max_linear, linear_vel))
+        # Velocidad angular proporcional al error de orientación
+        angular_vel = self.k_p_angular * angle_diff
         angular_vel = max(-self.max_angular, min(self.max_angular, angular_vel))
+
+        if abs(angle_diff) < self.align_angle:
+            # Suficientemente alineado: avanzar (reducir velocidad si el ángulo es grande)
+            # La velocidad lineal escala con cos(angle_diff) para frenar al girar
+            scale = max(0.0, math.cos(angle_diff))
+            linear_vel = self.k_p_linear * min(distance, 1.0) * scale
+            # Garantizar velocidad mínima para no quedarse parado
+            linear_vel = max(self.min_linear, linear_vel)
+            linear_vel = min(self.max_linear, linear_vel)
+            nav_state = "GOING_STRAIGHT" if abs(angle_diff) < 0.3 else "TURNING_TO_GOAL"
+        else:
+            # Ángulo demasiado grande: girar en sitio antes de avanzar
+            linear_vel = 0.0
+            nav_state = "TURNING_TO_GOAL"
 
         return linear_vel, angular_vel, False, nav_state, {
             "distance": distance,
@@ -212,11 +153,11 @@ class Navigator:
             "min_left": min_left,
             "min_right": min_right,
             "nearest_all": nearest_all,
-            "obstacle_detected": obstacle_detected,
-            "repulsive_mag": repulsive_mag,
+            "obstacle_detected": False,
+            "repulsive_mag": 0.0,
             "angle_diff": angle_diff,
-            "danger_now": danger_now,
-            "avoid_mode": self._in_avoid_mode,
-            "danger_count": self._danger_count,
-            "clear_count": self._clear_count,
+            "danger_now": False,
+            "avoid_mode": False,
+            "danger_count": 0,
+            "clear_count": 0,
         }
