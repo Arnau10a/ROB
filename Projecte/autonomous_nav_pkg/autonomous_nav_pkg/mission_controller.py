@@ -100,13 +100,15 @@ class MissionController(Node):
         self.declare_parameter('use_sim_time', False)
 
         # ── QoS ──────────────────────────────────────────────────────
+        # TurtleBot3 publishes both /odom and /scan with BEST_EFFORT;
+        # using RELIABLE here causes a QoS mismatch and no messages arrive.
         qos_best_effort = QoSProfile(
             depth=10, reliability=ReliabilityPolicy.BEST_EFFORT
         )
 
         # ── Subscribers ──────────────────────────────────────────────
         self.sub_odom = self.create_subscription(
-            Odometry, '/odom', self.odom_callback, 10
+            Odometry, '/odom', self.odom_callback, qos_best_effort
         )
         self.sub_scan = self.create_subscription(
             LaserScan, '/scan', self.scan_callback, qos_best_effort
@@ -178,6 +180,8 @@ class MissionController(Node):
         self._scan_count = 0
         self._last_diag_ns = 0
         self._diag_period_ns = int(2.0e9)
+        self._last_wait_warn_ns = 0
+        self._wait_warn_period_ns = int(3.0e9)
 
         # ── Startup log ──────────────────────────────────────────────
         self.get_logger().info('Mission Controller initialised')
@@ -378,6 +382,18 @@ class MissionController(Node):
         self.update_pose_from_tf()
 
         if not self.odom_ready or not self.scan_ready:
+            now_ns = self.get_clock().now().nanoseconds
+            if (now_ns - self._last_wait_warn_ns) >= self._wait_warn_period_ns:
+                missing = []
+                if not self.odom_ready:
+                    missing.append('/odom')
+                if not self.scan_ready:
+                    missing.append('/scan')
+                self.get_logger().warn(
+                    f'Waiting for sensors: {", ".join(missing)} — '
+                    'check bringup and ROS_DOMAIN_ID'
+                )
+                self._last_wait_warn_ns = now_ns
             return
 
         if self.phase == self.PHASE_I:
@@ -416,6 +432,7 @@ class MissionController(Node):
         self._append_csv(goal_x, goal_y, lin, ang, nav_state, nav_debug)
 
         if reached:
+            self.stop_robot()
             self.get_logger().info(
                 f'[WAYPOINT] Reached wp {self.current_wp_idx + 1}: '
                 f'({goal_x:.2f}, {goal_y:.2f})'
@@ -513,6 +530,7 @@ class MissionController(Node):
                     )
                     self.phase = self.PHASE_DONE
             else:
+                self.stop_robot()
                 self.get_logger().info(
                     f'[EXPLORE] Reached exploration wp '
                     f'{self.exploration_wp_idx + 1}'
@@ -601,12 +619,23 @@ class MissionController(Node):
         """Save the SLAM-generated map using map_saver_cli."""
         map_path = os.path.join(os.getcwd(), 'generated_map')
         try:
-            subprocess.Popen([
-                'ros2', 'run', 'nav2_map_server', 'map_saver_cli',
-                '-f', map_path,
-                '--ros-args', '-p', 'save_map_timeout:=5000',
-            ])
             self.get_logger().info(f'[MAP] Saving map to {map_path}')
+            result = subprocess.run(
+                [
+                    'ros2', 'run', 'nav2_map_server', 'map_saver_cli',
+                    '-f', map_path,
+                    '--ros-args', '-p', 'save_map_timeout:=5000',
+                ],
+                timeout=10.0,
+            )
+            if result.returncode == 0:
+                self.get_logger().info('[MAP] Map saved successfully')
+            else:
+                self.get_logger().error(
+                    f'[MAP] map_saver_cli exited with code {result.returncode}'
+                )
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('[MAP] map_saver_cli timed out after 10s')
         except Exception as e:
             self.get_logger().error(f'[MAP] Failed to save map: {e}')
 
