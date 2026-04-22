@@ -11,6 +11,7 @@ from project_core_pkg.navigation import Navigator
 
 # Waypoints para la Fase I
 PUNT_B = (3.72, 2.55)
+PORTA = (5.92, 8.12)
 PUNT_O = (5.10, 12.61)
 
 def yaw_from_quaternion(q):
@@ -71,8 +72,8 @@ class Phase1Node(Node):
         self.angle_inc = 0.0
         self.scan_ready = False
 
-        # Phase I Waypoints: D -> B -> O
-        self.waypoints = [PUNT_B, PUNT_O]
+        # Phase I Waypoints: D -> B -> Porta -> O
+        self.waypoints = [PUNT_B, PORTA, PUNT_O]
         self.current_wp_idx = 0
         self.mission_completed = False
 
