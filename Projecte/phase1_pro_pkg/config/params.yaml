@@ -1,0 +1,11 @@
+phase1_pro_node:
+  ros__parameters:
+    use_sim_time: false
+    waypoints_x: [3.72, 5.92, 5.10]
+    waypoints_y: [2.55, 8.12, 12.61]
+    linear_vel: 0.20
+    angular_vel: 0.60
+    waypoint_tolerance: 0.20
+    obstacle_threshold: 0.35
+    clear_threshold: 0.60
+    recovery_time: 2.0
