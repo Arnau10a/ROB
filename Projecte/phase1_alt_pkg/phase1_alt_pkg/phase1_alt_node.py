@@ -1,0 +1,237 @@
+import math
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
+from tf2_ros import Buffer, TransformListener, TransformException
+
+from project_core_pkg.mission_logger import MissionLogger
+
+# Waypoints para la Fase I
+PUNT_B = (3.72, 2.55)
+PORTA = (5.92, 8.12)
+PUNT_O = (5.10, 12.61)
+
+def yaw_from_quaternion(q):
+    """Extract yaw from a geometry_msgs Quaternion."""
+    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+class Phase1AltNode(Node):
+    def __init__(self):
+        super().__init__('phase1_alt_node')
+        
+        # Parameters
+        self.declare_parameter('use_sim_time', False)
+
+        # QoS
+        qos_best_effort = QoSProfile(
+            depth=10, reliability=ReliabilityPolicy.BEST_EFFORT
+        )
+
+        # Subscribers
+        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_best_effort)
+        
+        # Publisher
+        self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        # TF for SLAM-based localisation
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        # Timer (20 Hz)
+        self.timer = self.create_timer(0.05, self.timer_callback)
+
+        # Odometry state (fallback)
+        self.odom_x = 0.0
+        self.odom_y = 0.0
+        self.odom_yaw = 0.0
+        self.odom_ready = False
+
+        # Initial pose (D) - Configurable
+        self.initial_x = 3.32
+        self.initial_y = 0.95
+        self.initial_yaw = 0.0
+
+        # Current pose in map frame
+        self.map_x = self.initial_x
+        self.map_y = self.initial_y
+        self.map_yaw = self.initial_yaw
+
+        # Scan state
+        self.scan_ranges = []
+        self.angle_min = 0.0
+        self.angle_inc = 0.0
+        self.scan_ready = False
+
+        # Phase I Waypoints: D -> B -> Porta -> O
+        self.waypoints = [PUNT_B, PORTA, PUNT_O]
+        self.current_wp_idx = 0
+        self.mission_completed = False
+
+        # Mission Logger
+        self.logger = MissionLogger()
+        self.log_count = 0
+
+        # Alternativa state machine
+        self.state = "TURN_TO_GOAL" # Estados: TURN_TO_GOAL, MOVE_FORWARD, AVOID_OBSTACLE
+        self.avoid_turn_dir = 1.0   # 1.0 = left, -1.0 = right
+
+        self.get_logger().info('Phase 1 Alt Node initialized (State Machine Strategy). Waypoints: D -> B -> O')
+
+    def update_pose_from_tf(self):
+        """
+        Try to get the pose from SLAM TF (map -> base_link).
+        Falls back to dead-reckoning from odometry.
+        """
+        try:
+            t = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+            self.map_x = t.transform.translation.x
+            self.map_y = t.transform.translation.y
+            self.map_yaw = yaw_from_quaternion(t.transform.rotation)
+        except TransformException:
+            # Fallback: dead reckoning
+            if self.odom_ready:
+                self.map_x = self.initial_x + self.odom_x
+                self.map_y = self.initial_y + self.odom_y
+                self.map_yaw = self.initial_yaw + self.odom_yaw
+
+    def odom_callback(self, msg):
+        self.odom_x = msg.pose.pose.position.x
+        self.odom_y = msg.pose.pose.position.y
+        self.odom_yaw = yaw_from_quaternion(msg.pose.pose.orientation)
+        self.odom_ready = True
+
+    def scan_callback(self, msg):
+        self.scan_ranges = msg.ranges
+        self.angle_min = msg.angle_min
+        self.angle_inc = msg.angle_increment
+        self.scan_ready = True
+
+    def publish_vel(self, linear, angular):
+        msg = Twist()
+        msg.linear.x = float(linear)
+        msg.angular.z = float(angular)
+        self.pub_cmd.publish(msg)
+
+    def stop_robot(self):
+        self.publish_vel(0.0, 0.0)
+
+    def normalize_angle(self, angle):
+        while angle > math.pi: angle -= 2.0 * math.pi
+        while angle < -math.pi: angle += 2.0 * math.pi
+        return angle
+
+    def get_front_clearance(self):
+        min_front = float('inf')
+        min_left = float('inf')
+        min_right = float('inf')
+        
+        for i, r in enumerate(self.scan_ranges):
+            if r is None or not math.isfinite(r) or r <= 0.10: continue
+            if r > 10.0: continue
+            
+            a = self.normalize_angle(self.angle_min + i * self.angle_inc)
+            deg = math.degrees(a)
+            
+            if -30.0 <= deg <= 30.0:
+                min_front = min(min_front, r)
+            elif 30.0 < deg <= 90.0:
+                min_left = min(min_left, r)
+            elif -90.0 <= deg < -30.0:
+                min_right = min(min_right, r)
+                
+        return min_front, min_left, min_right
+
+    def timer_callback(self):
+        self.update_pose_from_tf()
+
+        if not self.odom_ready or not self.scan_ready:
+            return
+
+        if self.mission_completed:
+            self.stop_robot()
+            return
+
+        if self.current_wp_idx >= len(self.waypoints):
+            self.get_logger().info('PHASE 1 COMPLETE! Reached destination.')
+            self.mission_completed = True
+            return
+
+        goal_x, goal_y = self.waypoints[self.current_wp_idx]
+
+        # Logging (approx every 1s)
+        self.log_count += 1
+        if self.log_count % 20 == 0:
+            self.logger.log("I", self.map_x, self.map_y, self.map_yaw)
+
+        # Distancia al objetivo
+        dx = goal_x - self.map_x
+        dy = goal_y - self.map_y
+        distance = math.hypot(dx, dy)
+
+        # Condición de llegada al waypoint
+        if distance < 0.2:
+            self.get_logger().info(f'WAYPOINT REACHED: ({goal_x:.2f}, {goal_y:.2f})')
+            self.current_wp_idx += 1
+            self.state = "TURN_TO_GOAL"
+            return
+
+        # Angulo objetivo
+        target_angle = math.atan2(dy, dx)
+        angle_diff = self.normalize_angle(target_angle - self.map_yaw)
+
+        # Sensores
+        front_dist, left_dist, right_dist = self.get_front_clearance()
+
+        # Transiciones de la Máquina de Estados
+        if front_dist < 0.35: # Obstáculo muy cerca
+            if self.state != "AVOID_OBSTACLE":
+                self.get_logger().info("Obstacle detected! Avoiding...")
+                self.state = "AVOID_OBSTACLE"
+                # Gira hacia donde haya más espacio (derecha vs izquierda)
+                self.avoid_turn_dir = 1.0 if right_dist < left_dist else -1.0
+        elif self.state == "AVOID_OBSTACLE" and front_dist > 0.6: # Obstáculo superado
+            self.get_logger().info("Clear. Resuming path to goal.")
+            self.state = "TURN_TO_GOAL"
+
+        # Comportamiento según estado
+        if self.state == "AVOID_OBSTACLE":
+            # Gira sobre sí mismo hasta liberar el frente
+            self.publish_vel(0.0, 0.6 * self.avoid_turn_dir)
+            
+        elif self.state == "TURN_TO_GOAL":
+            if abs(angle_diff) > 0.15:
+                # Gira hacia el objetivo
+                turn_speed = 0.5 if angle_diff > 0 else -0.5
+                self.publish_vel(0.0, turn_speed)
+            else:
+                self.state = "MOVE_FORWARD"
+                
+        elif self.state == "MOVE_FORWARD":
+            if abs(angle_diff) > 0.35:
+                # Corrección si nos desviamos mucho del ángulo al objetivo
+                self.state = "TURN_TO_GOAL"
+            else:
+                # Avanza hacia adelante
+                self.publish_vel(0.20, 0.0)
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = Phase1AltNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.logger.save_map(node, "phase1_alt")
+        node.stop_robot()
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
