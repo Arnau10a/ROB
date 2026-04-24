@@ -8,6 +8,7 @@ from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener, TransformException
 
 from project_core_pkg.navigation import Navigator
+from project_core_pkg.mission_logger import MissionLogger
 
 # Waypoints para la Fase I
 PUNT_B = (3.72, 2.55)
@@ -77,6 +78,10 @@ class Phase1Node(Node):
         self.current_wp_idx = 0
         self.mission_completed = False
 
+        # Mission Logger
+        self.logger = MissionLogger()
+        self.log_count = 0
+
         self.get_logger().info('Phase 1 Node initialized. Waypoints: D -> B -> O')
 
     def update_pose_from_tf(self):
@@ -135,6 +140,11 @@ class Phase1Node(Node):
 
         goal_x, goal_y = self.waypoints[self.current_wp_idx]
 
+        # Logging (approx every 1s)
+        self.log_count += 1
+        if self.log_count % 20 == 0:
+            self.logger.log("I", self.map_x, self.map_y, self.map_yaw)
+
         lin, ang, reached, nav_state, nav_debug = self.navigator.compute_apf_cmd_vel(
             self.map_x, self.map_y, self.map_yaw,
             goal_x, goal_y,
@@ -155,6 +165,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.logger.save_map(node, "phase1")
         node.stop_robot()
         node.destroy_node()
         rclpy.shutdown()

@@ -9,6 +9,7 @@ from tf2_ros import Buffer, TransformListener, TransformException
 
 from project_core_pkg.navigation import Navigator
 from project_core_pkg.perception import Perception
+from project_core_pkg.mission_logger import MissionLogger
 
 def yaw_from_quaternion(q):
     siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
@@ -57,6 +58,10 @@ class Phase3Node(Node):
 
         self.docking_approach_dist = 0.30
         self.phase_completed = False
+
+        # Mission Logger
+        self.logger = MissionLogger()
+        self.log_count = 0
 
         self.get_logger().info('Phase 3 Node initialized: Precision Docking')
 
@@ -115,6 +120,15 @@ class Phase3Node(Node):
         else:
             goal_x, goal_y = self.perception.station_center
 
+        # Logging (approx every 1s)
+        self.log_count += 1
+        if self.log_count % 20 == 0:
+            self.logger.log(
+                "III", self.map_x, self.map_y, self.map_yaw,
+                obstacles=self.perception.detected_obstacles,
+                pillars=self.perception.station_pillars
+            )
+
         dx = goal_x - self.map_x
         dy = goal_y - self.map_y
         dist = math.hypot(dx, dy)
@@ -157,6 +171,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.logger.save_map(node, "phase3")
         node.stop_robot()
         node.destroy_node()
         rclpy.shutdown()

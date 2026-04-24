@@ -11,6 +11,7 @@ from tf2_ros import Buffer, TransformListener, TransformException
 
 from project_core_pkg.navigation import Navigator
 from project_core_pkg.perception import Perception
+from project_core_pkg.mission_logger import MissionLogger
 
 # Reference points
 PUNT_BASE = (5.00, 11.69)
@@ -81,6 +82,10 @@ class Phase2Node(Node):
         self.exploration_returning = False
         self.phase_completed = False
 
+        # Mission Logger
+        self.logger = MissionLogger()
+        self.log_count = 0
+
         self.get_logger().info('Phase 2 Node initialized: Exploration & Perception')
 
     def update_pose_from_tf(self):
@@ -117,18 +122,6 @@ class Phase2Node(Node):
     def stop_robot(self):
         self.publish_vel(0.0, 0.0)
 
-    def save_map(self):
-        map_path = os.path.join(os.getcwd(), 'generated_map')
-        try:
-            subprocess.Popen([
-                'ros2', 'run', 'nav2_map_server', 'map_saver_cli',
-                '-f', map_path,
-                '--ros-args', '-p', 'save_map_timeout:=5000',
-            ])
-            self.get_logger().info(f'[MAP] Saving map to {map_path}')
-        except Exception as e:
-            self.get_logger().error(f'[MAP] Failed to save map: {e}')
-
     def timer_callback(self):
         self.update_pose_from_tf()
         if not self.odom_ready or not self.scan_ready or self.phase_completed:
@@ -152,6 +145,15 @@ class Phase2Node(Node):
             self.get_logger().info(f'[STATION] Charging station found at ({cx:.2f}, {cy:.2f})!')
             self.exploration_returning = True
 
+        # Logging (approx every 1s)
+        self.log_count += 1
+        if self.log_count % 20 == 0:
+            self.logger.log(
+                "II", self.map_x, self.map_y, self.map_yaw,
+                obstacles=self.perception.detected_obstacles,
+                pillars=self.perception.station_pillars
+            )
+
         # Goal selection
         if self.exploration_returning:
             goal_x, goal_y = PUNT_BASE
@@ -172,8 +174,7 @@ class Phase2Node(Node):
 
         if reached:
             if self.exploration_returning:
-                self.get_logger().info('[PHASE II] Arrived at Punt Base - saving map')
-                self.save_map()
+                self.get_logger().info('[PHASE II] Arrived at Punt Base - completion log')
                 self.phase_completed = True
                 self.stop_robot()
             else:
@@ -190,6 +191,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.logger.save_map(node, "phase2")
         node.stop_robot()
         node.destroy_node()
         rclpy.shutdown()
