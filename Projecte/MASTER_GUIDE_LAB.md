@@ -36,23 +36,21 @@ mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
 ```
 
-### 2. Crear Paquetes y Estructura
+### 2. Crear Paquete Único
 ```bash
-# Crear Core
-ros2 pkg create --build-type ament_python project_core_pkg
-
-# Crear Fases (con dependencias y nodos)
-ros2 pkg create --build-type ament_python --node-name phase1_node phase1_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
-ros2 pkg create --build-type ament_python --node-name phase1_alt_node phase1_alt_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
-ros2 pkg create --build-type ament_python --node-name phase1_pro_node phase1_pro_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros std_msgs
-ros2 pkg create --build-type ament_python --node-name phase2_node phase2_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
-ros2 pkg create --build-type ament_python --node-name phase3_node phase3_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
+# Crear el paquete con todas las dependencias necesarias
+ros2 pkg create --build-type ament_python --node-name mission_controller autonomous_nav_pkg --dependencies rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
 ```
 
-### 3. Copiar Archivos Manualmente
-Copia tus archivos `.py` desde el USB a sus carpetas correspondientes:
+### 3. Copiar Archivos
+Copia tus archivos `.py` del proyecto a la carpeta del código fuente:
+`~/ros2_ws/src/autonomous_nav_pkg/autonomous_nav_pkg/`
 
-| Archivo Fuente | Carpeta Destino |
+| Archivo Fuente | Función |
+| :--- | :--- |
+| `mission_controller.py` | Lógica principal y máquina de estados |
+| `navigation.py` | Algoritmo APF (Campos Potenciales) |
+| `perception.py` | Detección de estación y obstáculos |
 | :--- | :--- |
 | `navigation.py`, `perception.py` | `~/ros2_ws/src/project_core_pkg/project_core_pkg/` |
 | `phase1_node.py` | `~/ros2_ws/src/phase1_pkg/phase1_pkg/` |
@@ -85,14 +83,21 @@ ros2 launch turtlebot3_bringup robot.launch.py
 
 ### 2. Lanzar SLAM (PC Lab)
 ```bash
-export ROS_DOMAIN_ID=N
-ros2 launch turtlebot3_cartographer cartographer.launch.py
+ros2 launch turtlebot3_slam slam_toolbox_sync.launch.py
 ```
 
-### 3. Ejecutar Fase deseada (PC Lab)
+### 3. Visualización en RViz (PC Lab)
+```bash
+ros2 launch turtlebot3_bringup rviz2.launch.py
+```
+
+### 4. Ejecutar controlador de misión (PC Lab)
 ```bash
 source ~/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=N
+
+# Ejecutar el nodo principal:
+ros2 run autonomous_nav_pkg mission_controller
 
 # Fase I (Navegación Global - Original APF):
 ros2 run phase1_pkg phase1_node
