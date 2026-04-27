@@ -43,6 +43,8 @@ ros2 pkg create --build-type ament_python project_core_pkg
 
 # Crear Fases (con dependencias y nodos)
 ros2 pkg create --build-type ament_python --node-name phase1_node phase1_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
+ros2 pkg create --build-type ament_python --node-name phase1_alt_node phase1_alt_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
+ros2 pkg create --build-type ament_python --node-name phase1_pro_node phase1_pro_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros std_msgs
 ros2 pkg create --build-type ament_python --node-name phase2_node phase2_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
 ros2 pkg create --build-type ament_python --node-name phase3_node phase3_pkg --dependencies project_core_pkg rclpy geometry_msgs sensor_msgs nav_msgs tf2_ros
 ```
@@ -54,10 +56,14 @@ Copia tus archivos `.py` desde el USB a sus carpetas correspondientes:
 | :--- | :--- |
 | `navigation.py`, `perception.py` | `~/ros2_ws/src/project_core_pkg/project_core_pkg/` |
 | `phase1_node.py` | `~/ros2_ws/src/phase1_pkg/phase1_pkg/` |
+| `phase1_alt_node.py` | `~/ros2_ws/src/phase1_alt_pkg/phase1_alt_pkg/` |
+| `phase1_pro_node.py` | `~/ros2_ws/src/phase1_pro_pkg/phase1_pro_pkg/` |
+| `params.yaml` | `~/ros2_ws/src/phase1_pro_pkg/config/` |
+| `phase1_pro.launch.py` | `~/ros2_ws/src/phase1_pro_pkg/launch/` |
 | `phase2_node.py` | `~/ros2_ws/src/phase2_pkg/phase2_pkg/` |
 | `phase3_node.py` | `~/ros2_ws/src/phase3_pkg/phase3_pkg/` |
 
-*Asegúrate de que existan archivos `__init__.py` vacíos en cada una de esas carpetas de destino.*
+*Asegúrate de que existan archivos `__init__.py` vacíos en cada una de esas carpetas de destino. Recuerda crear las carpetas `config/` y `launch/` dentro de `phase1_pro_pkg` y modificar su `setup.py` para incluir los data_files.*
 
 ### 4. Compilar
 ```bash
@@ -88,8 +94,14 @@ ros2 launch turtlebot3_cartographer cartographer.launch.py
 source ~/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=N
 
-# Fase I (Navegación Global):
+# Fase I (Navegación Global - Original APF):
 ros2 run phase1_pkg phase1_node
+
+# Fase I (Alternativa - Máquina de Estados):
+ros2 run phase1_alt_pkg phase1_alt_node
+
+# Fase I (Pro - Parámetros, Telemetría y Launch):
+ros2 launch phase1_pro_pkg phase1_pro.launch.py
 
 # Fase II (Exploración):
 ros2 run phase2_pkg phase2_node

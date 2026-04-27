@@ -2,6 +2,8 @@ import math
 import csv
 import os
 import subprocess
+import threading
+import sys
 
 import rclpy
 from rclpy.node import Node
@@ -15,19 +17,17 @@ from autonomous_nav_pkg.navigation import Navigator
 from autonomous_nav_pkg.perception import Perception
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Helper
-# ──────────────────────────────────────────────────────────────────────
+
 
 def yaw_from_quaternion(q):
-    """Extract yaw from a geometry_msgs Quaternion."""
+    # sacar el yaw del cuaternion
     siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
     cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
     return math.atan2(siny_cosp, cosy_cosp)
 
 
 def normalize_angle(angle):
-    """Wrap angle to [-π, π]."""
+    # que el angulo no se pase de pi
     while angle > math.pi:
         angle -= 2.0 * math.pi
     while angle < -math.pi:
@@ -35,35 +35,37 @@ def normalize_angle(angle):
     return angle
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Reference points (from the project document)
-# ──────────────────────────────────────────────────────────────────────
-
-PUNT_B = (3.72, 2.55)
-PUNT_O = (5.10, 12.61)
-PUNT_BASE = (5.00, 11.69)
-PUNT_P = (0.30, 11.01)
-PUNT_Q = (1.90, 12.21)
-PUNT_R = (7.12, 12.61)
-PORTA = (5.92, 8.12)
-
-# Passadís exploration area (estimated from reference points)
-PASSADIS_X_MIN = 0.5
-PASSADIS_X_MAX = 7.0
-PASSADIS_Y_MIN = 10.5
-PASSADIS_Y_MAX = 13.5
-
-# Lawnmower exploration step
-EXPLORATION_STEP_X = 1.5   # metres between vertical sweeps
-EXPLORATION_STEP_Y = 2.0   # vertical extent per sweep
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Exploration waypoint generator
-# ──────────────────────────────────────────────────────────────────────
+PUNT_A = (4.280, 1.735)
+PUNT_B = (5.280, 1.735)
+PUNT_BASE = (3.475, 15.390)
+PUNT_Q = (9.115, 14.190)
+PUNT_C = (4.880, 2.535)
+PUNT_R = (7.310, 16.190)
+PUNT_D = (5.080, 5.740)
+PUNT_S = (3.675, 14.190)
+PUNT_E = (5.880, 8.145)
+PUNT_T = (1.275, 14.990)
+PUNT_F = (5.480, 10.545)
+PUNT_U = (1.075, 16.190)
+PORTA = (6.280, 11.685)
+
+
+PASSADIS_X_MIN = 1.0
+PASSADIS_X_MAX = 9.2
+PASSADIS_Y_MIN = 14.0
+PASSADIS_Y_MAX = 16.5
+
+
+EXPLORATION_STEP_X = 1.5
+EXPLORATION_STEP_Y = 2.0
+
+
+
 
 def generate_exploration_waypoints():
-    """Generate a lawnmower pattern covering the Passadís area."""
+    # generamos puntos estilo cortacesped para explorar
     waypoints = []
     x = PASSADIS_X_MIN
     going_up = True
@@ -81,13 +83,11 @@ def generate_exploration_waypoints():
     return waypoints
 
 
-# ══════════════════════════════════════════════════════════════════════
-# Mission Controller Node
-# ══════════════════════════════════════════════════════════════════════
+
 
 class MissionController(Node):
 
-    # ── Phase constants ──────────────────────────────────────────────
+
     PHASE_I = "I"
     PHASE_II = "II"
     PHASE_III = "III"
@@ -95,16 +95,20 @@ class MissionController(Node):
 
     def __init__(self):
         super().__init__('mission_controller_node')
+        
+        print("\n" + "="*30)
+        print(" SELECCION DE PUNTO DE INICIO")
+        print("="*30)
+        user_choice = input("¿Donde empieza el robot? (A/B/C): ").strip().upper()
+        print(f"Punto seleccionado: {user_choice}")
+        print("="*30 + "\n")
 
-        # ── Parameters ───────────────────────────────────────────────
-        self.declare_parameter('use_sim_time', False)
 
-        # ── QoS ──────────────────────────────────────────────────────
         qos_best_effort = QoSProfile(
             depth=10, reliability=ReliabilityPolicy.BEST_EFFORT
         )
 
-        # ── Subscribers ──────────────────────────────────────────────
+
         self.sub_odom = self.create_subscription(
             Odometry, '/odom', self.odom_callback, 10
         )
@@ -112,75 +116,83 @@ class MissionController(Node):
             LaserScan, '/scan', self.scan_callback, qos_best_effort
         )
 
-        # ── Publisher ────────────────────────────────────────────────
+
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # ── TF for SLAM-based localisation ───────────────────────────
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.tf_ready = False
 
-        # ── Timer (20 Hz) ────────────────────────────────────────────
+
         self.timer = self.create_timer(0.05, self.timer_callback)
 
-        # ── Sub-modules ──────────────────────────────────────────────
+
         self.navigator = Navigator()
         self.perception = Perception()
 
-        # ── Odometry state (fallback) ────────────────────────────────
+
         self.odom_x = 0.0
         self.odom_y = 0.0
         self.odom_yaw = 0.0
         self.odom_ready = False
 
-        # ── Initial pose (D) ────────────────────────────────────────
-        self.initial_x = 3.32
-        self.initial_y = 0.95
+
+        if user_choice == 'B':
+            self.initial_x, self.initial_y = PUNT_B
+        elif user_choice == 'C':
+            self.initial_x, self.initial_y = PUNT_C
+        else:
+            self.initial_x, self.initial_y = PUNT_A
+            
         self.initial_yaw = 0.0
 
-        # ── Current pose in map frame ────────────────────────────────
         self.map_x = self.initial_x
         self.map_y = self.initial_y
         self.map_yaw = self.initial_yaw
 
-        # ── Scan state ───────────────────────────────────────────────
+
         self.scan_ranges = []
         self.angle_min = 0.0
         self.angle_inc = 0.0
         self.scan_ready = False
 
-        # ── Phase I: D → B → O ──────────────────────────────────────
+
         self.phase = self.PHASE_I
-        self.waypoints_phase_1 = [PUNT_B, PUNT_O]
+        self.waypoints_phase_1 = [PUNT_D, PUNT_E, PUNT_F, PORTA, PUNT_Q, PUNT_BASE]
         self.current_wp_idx = 0
 
-        # ── Phase II: Exploration ────────────────────────────────────
+
         self.exploration_wps = generate_exploration_waypoints()
         self.exploration_wp_idx = 0
-        self.exploration_returning = False  # True once heading to Punt Base
+        self.exploration_returning = False
 
-        # ── Phase III: Docking ───────────────────────────────────────
-        self.docking_approach_dist = 0.30   # switch to precision at 30cm
 
-        # ── CSV log ──────────────────────────────────────────────────
+        self.docking_approach_dist = 0.30
+
+
         self.log_file_path = os.path.join(os.getcwd(), 'mission_log.csv')
         self._init_csv_log()
 
-        # ── Console throttling ───────────────────────────────────────
+
         self._last_state = None
         self._last_state_log_ns = 0
         self._state_log_period_ns = int(0.5e9)
         self._heartbeat_period_ns = int(2.0e9)
         self._last_heartbeat_ns = 0
 
-        # ── Diagnostics ──────────────────────────────────────────────
+
         self._odom_count = 0
         self._scan_count = 0
         self._last_diag_ns = 0
         self._diag_period_ns = int(2.0e9)
 
-        # ── Startup log ──────────────────────────────────────────────
-        self.get_logger().info('Mission Controller initialised')
+
+        self.force_exit = False
+        threading.Thread(target=self._emergency_listener, daemon=True).start()
+
+
+        self.get_logger().info('Mission Controller initialised. Press ENTER at any time to save map and exit.')
         self.get_logger().info(
             f'Initial pose (D): x={self.initial_x:.2f}, '
             f'y={self.initial_y:.2f}, yaw={self.initial_yaw:.2f}'
@@ -190,9 +202,14 @@ class MissionController(Node):
             f'Phase II exploration: {len(self.exploration_wps)} waypoints'
         )
 
-    # ==================================================================
-    # CSV Logging
-    # ==================================================================
+    def _emergency_listener(self):
+        # si se pulsa enter, guarda y cierra rapido
+        sys.stdin.readline()
+        self.get_logger().warn('\n[EMERGENCY] ENTER pressed! Saving map and forcing shutdown...')
+        self.save_map()
+        self.force_exit = True
+
+
 
     def _init_csv_log(self):
         with open(self.log_file_path, mode='w', newline='') as f:
@@ -258,7 +275,7 @@ class MissionController(Node):
 
     @staticmethod
     def _fmt(val):
-        """Format a numeric value to 3 decimal places, or empty string."""
+        # formatea los floats a 3 decimales
         if val is None:
             return ''
         try:
@@ -266,15 +283,10 @@ class MissionController(Node):
         except (TypeError, ValueError):
             return ''
 
-    # ==================================================================
-    # Localisation
-    # ==================================================================
+
 
     def update_pose_from_tf(self):
-        """
-        Try to get the pose from SLAM TF (map → base_link).
-        Falls back to dead-reckoning from odometry.
-        """
+        # coge la pose del mapa y si falla tira de odom
         try:
             t = self.tf_buffer.lookup_transform(
                 'map', 'base_link', rclpy.time.Time()
@@ -284,15 +296,13 @@ class MissionController(Node):
             self.map_yaw = yaw_from_quaternion(t.transform.rotation)
             self.tf_ready = True
         except TransformException:
-            # Fallback: dead reckoning
+            # si falla miramos la odometria
             if self.odom_ready:
                 self.map_x = self.initial_x + self.odom_x
                 self.map_y = self.initial_y + self.odom_y
                 self.map_yaw = self.initial_yaw + self.odom_yaw
 
-    # ==================================================================
-    # Callbacks
-    # ==================================================================
+
 
     def odom_callback(self, msg):
         self.odom_x = msg.pose.pose.position.x
@@ -308,9 +318,7 @@ class MissionController(Node):
         self.scan_ready = True
         self._scan_count += 1
 
-    # ==================================================================
-    # Velocity helpers
-    # ==================================================================
+
 
     def publish_vel(self, linear, angular):
         msg = Twist()
@@ -321,9 +329,7 @@ class MissionController(Node):
     def stop_robot(self):
         self.publish_vel(0.0, 0.0)
 
-    # ==================================================================
-    # Console logging (throttled)
-    # ==================================================================
+
 
     def _maybe_log_state(self, nav_state, nav_debug,
                          goal_x, goal_y, lin, ang):
@@ -345,7 +351,7 @@ class MissionController(Node):
             self._last_state = nav_state
             self._last_state_log_ns = now_ns
 
-        # Heartbeat
+        # print de q sigue vivo
         if (now_ns - self._last_heartbeat_ns) >= self._heartbeat_period_ns:
             self.get_logger().info(
                 f'[HEARTBEAT] phase={self.phase} '
@@ -369,11 +375,14 @@ class MissionController(Node):
         self._scan_count = 0
         self._last_diag_ns = now_ns
 
-    # ==================================================================
-    # Main timer
-    # ==================================================================
+
 
     def timer_callback(self):
+        if self.force_exit:
+            self.phase = self.PHASE_DONE
+            self.stop_robot()
+            return
+
         self._diagnostics()
         self.update_pose_from_tf()
 
@@ -389,9 +398,7 @@ class MissionController(Node):
         elif self.phase == self.PHASE_DONE:
             self.stop_robot()
 
-    # ==================================================================
-    # Phase I — Global Navigation: D → B → O
-    # ==================================================================
+
 
     def execute_phase_1(self):
         if self.current_wp_idx >= len(self.waypoints_phase_1):
@@ -424,18 +431,16 @@ class MissionController(Node):
         else:
             self.publish_vel(lin, ang)
 
-    # ==================================================================
-    # Phase II — Exploration & Perception
-    # ==================================================================
+
 
     def execute_phase_2(self):
-        # Always try to detect the charging station
+        # siempre hay q buscar la estacion
         self.perception.find_charging_station(
             self.scan_ranges, self.angle_min, self.angle_inc,
             self.map_x, self.map_y, self.map_yaw,
         )
 
-        # Detect obstacles in the Passadís for logging
+        # ver obstaculos para guardarlos
         new_obs = self.perception.detect_obstacles(
             self.scan_ranges, self.angle_min, self.angle_inc,
             self.map_x, self.map_y, self.map_yaw,
@@ -446,7 +451,7 @@ class MissionController(Node):
                     f'[OBSTACLE] Detected at ({ox:.2f}, {oy:.2f})'
                 )
 
-        # If station just found, switch to returning to Punt Base
+        # si la vimos, volver a base
         if self.perception.station_found and not self.exploration_returning:
             cx, cy = self.perception.station_center
             self.get_logger().info(
@@ -459,13 +464,13 @@ class MissionController(Node):
                 )
             self.exploration_returning = True
 
-        # Determine current goal
+        # ver a donde tenemos q ir ahora
         if self.exploration_returning:
             goal_x, goal_y = PUNT_BASE
             label = 'RETURNING_TO_BASE'
         else:
             if self.exploration_wp_idx >= len(self.exploration_wps):
-                # Exploration finished without finding station
+                # acabamos sin ver nada
                 self.get_logger().warn(
                     '[PHASE II] Exploration complete — '
                     'station NOT found, returning to base anyway'
@@ -479,7 +484,7 @@ class MissionController(Node):
                 ]
                 label = f'EXPLORING_WP_{self.exploration_wp_idx + 1}'
 
-        # Navigate towards goal using APF
+        # mover con los campos pot.
         lin, ang, reached, nav_state, nav_debug = (
             self.navigator.compute_apf_cmd_vel(
                 self.map_x, self.map_y, self.map_yaw,
@@ -494,7 +499,7 @@ class MissionController(Node):
 
         if reached:
             if self.exploration_returning:
-                # Arrived at Punt Base — save map and go to Phase III
+                # llegamos a base, guardar mapa
                 self.get_logger().info(
                     '[PHASE II] Arrived at Punt Base — saving map'
                 )
@@ -521,9 +526,7 @@ class MissionController(Node):
         else:
             self.publish_vel(lin, ang)
 
-    # ==================================================================
-    # Phase III — Precision Docking
-    # ==================================================================
+
 
     def execute_phase_3(self):
         if not self.perception.station_found:
@@ -538,7 +541,7 @@ class MissionController(Node):
         dy = goal_y - self.map_y
         dist = math.hypot(dx, dy)
 
-        # Docking complete
+        # ya aparcao
         if dist < 0.05:
             self.stop_robot()
             self.get_logger().info(
@@ -556,7 +559,7 @@ class MissionController(Node):
         angle_diff = normalize_angle(target_angle - self.map_yaw)
 
         if dist > self.docking_approach_dist:
-            # Approach using APF (still avoids pillars)
+            # acercarse con el apf (sigue esquivando)
             lin, ang, reached, nav_state, nav_debug = (
                 self.navigator.compute_apf_cmd_vel(
                     self.map_x, self.map_y, self.map_yaw,
@@ -566,10 +569,10 @@ class MissionController(Node):
             )
             nav_state = f'DOCKING_APPROACH|{nav_state}'
         else:
-            # Precision phase: slow, no APF, direct control
+            # modo de aparcar, mas lento y sin apf
             nav_state = 'DOCKING_PRECISION'
 
-            # First align, then advance
+            # alinear primero, luego recto
             if abs(angle_diff) > 0.15:
                 lin = 0.0
                 ang = 0.6 * angle_diff
@@ -593,12 +596,10 @@ class MissionController(Node):
         self._append_csv(goal_x, goal_y, lin, ang, nav_state, nav_debug)
         self.publish_vel(lin, ang)
 
-    # ==================================================================
-    # Map saving
-    # ==================================================================
+
 
     def save_map(self):
-        """Save the SLAM-generated map using map_saver_cli."""
+        # guarda el mapa con map_saver_cli
         map_path = os.path.join(os.getcwd(), 'generated_map')
         try:
             subprocess.Popen([
@@ -610,9 +611,7 @@ class MissionController(Node):
         except Exception as e:
             self.get_logger().error(f'[MAP] Failed to save map: {e}')
 
-    # ==================================================================
-    # Shutdown
-    # ==================================================================
+
 
     def shutdown(self):
         self.stop_robot()
@@ -630,9 +629,7 @@ class MissionController(Node):
             )
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Entry point
-# ──────────────────────────────────────────────────────────────────────
+
 
 def main(args=None):
     rclpy.init(args=args)

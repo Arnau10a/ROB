@@ -1,29 +1,22 @@
 import math
 
-
 class Navigator:
     def __init__(self):
-        # Control gains
         self.k_p_linear = 0.42
         self.k_p_angular = 1.4
 
-        # Velocity limits
         self.max_linear = 0.20
         self.max_angular = 0.60
 
-        # Goal condition
-        self.waypoint_tolerance = 0.15  # meters
+        self.waypoint_tolerance = 0.15
 
-        # APF params (más suave)
         self.k_att = 1.0
         self.k_rep = 0.04
         self.d_safe = 0.40
 
-        # Obstacle thresholds
         self.emergency_stop_dist = 0.14
         self.caution_dist = 0.24
 
-        # Anti flicker / hysteresis
         self.avoid_enter_count_required = 3
         self.avoid_exit_count_required = 5
 
@@ -31,7 +24,6 @@ class Navigator:
         self._clear_count = 0
         self._in_avoid_mode = False
 
-        # Cap de repulsión total para evitar giros locos
         self.max_repulsive_mag = 0.80
 
     def normalize_angle(self, angle):
@@ -114,7 +106,6 @@ class Navigator:
 
         min_front, min_left, min_right, nearest_all = self._scan_stats(ranges, angle_min, angle_inc)
 
-        # Emergencia frontal
         if min_front < self.emergency_stop_dist:
             turn_sign = -1.0 if min_left < min_right else 1.0
             linear_vel = 0.0
@@ -138,11 +129,9 @@ class Navigator:
                 "clear_count": self._clear_count,
             }
 
-        # Attractive
         v_att_x = self.k_att * (dx / max(distance, 1e-6))
         v_att_y = self.k_att * (dy / max(distance, 1e-6))
 
-        # Repulsive
         v_rep_x = 0.0
         v_rep_y = 0.0
         obstacle_detected = False
@@ -156,7 +145,6 @@ class Navigator:
 
                 angle = self.normalize_angle(angle_min + i * angle_inc)
 
-                # usar frente + laterales (240º)
                 if abs(angle) > math.radians(120):
                     continue
 
@@ -167,21 +155,17 @@ class Navigator:
                 v_rep_x += rep_force * (-math.cos(abs_angle))
                 v_rep_y += rep_force * (-math.sin(abs_angle))
 
-        # cap repulsión
         v_rep_x, v_rep_y, repulsive_mag = self._cap_repulsive(v_rep_x, v_rep_y)
 
-        # Total vector
         v_tot_x = v_att_x + v_rep_x
         v_tot_y = v_att_y + v_rep_y
 
         target_angle = math.atan2(v_tot_y, v_tot_x)
         angle_diff = self.normalize_angle(target_angle - current_yaw)
 
-        # Condición de peligro instantánea
         danger_now = (min_front < self.caution_dist) or (repulsive_mag > 0.40)
         self._update_avoid_hysteresis(danger_now)
 
-        # Policy
         if self._in_avoid_mode:
             nav_state = "AVOIDING_OBSTACLE"
             if abs(angle_diff) > 0.55:
@@ -220,3 +204,5 @@ class Navigator:
             "danger_count": self._danger_count,
             "clear_count": self._clear_count,
         }
+
+
